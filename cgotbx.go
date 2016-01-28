@@ -27,9 +27,9 @@ inline int atbx_itr_next(htsFile *fp, tbx_t *tbx, hts_itr_t *iter, kstring_t *da
 import "C"
 
 import (
-	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -94,20 +94,26 @@ func (t *Tbx) Get(chrom string, start int, end int) (io.Reader, error) {
 	kstr := C.kstring_t{}
 
 	l := C.int(10)
-	res := make([][]byte, 0, 2)
+	p := newPipe(8192, 5) // TODO keep a cache of pipes?
 	// + pull from chans of *C.htsFile
-	htf := <-t.htfs
-	for l > 0 {
-		l := C.atbx_itr_next(htf, t.tbx, itr, &kstr)
-		if l < 0 {
-			break
+	go func() {
+		htf := <-t.htfs
+		for l > 0 {
+			l := C.atbx_itr_next(htf, t.tbx, itr, &kstr)
+			if l < 0 {
+				break
+			}
+			res := C.GoBytes(unsafe.Pointer(kstr.s), C.int(kstr.l))
+			_, err := p.Write(append(res, '\n'))
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
-		res = append(res, C.GoBytes(unsafe.Pointer(kstr.s), C.int(kstr.l)))
-	}
-	// unlock
-	t.htfs <- htf
-	// TODO: keep itr in the Tbx object
-	C.hts_itr_destroy(itr)
-	C.free(unsafe.Pointer(kstr.s))
-	return bytes.NewReader(bytes.Join(res, []byte{'\n'})), nil
+		p.Close()
+		// unlock
+		t.htfs <- htf
+		C.hts_itr_destroy(itr)
+		C.free(unsafe.Pointer(kstr.s))
+	}()
+	return p, nil
 }

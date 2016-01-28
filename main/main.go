@@ -19,11 +19,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	str, err := ioutil.ReadAll(rdr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(string(str))
+	fmt.Printf(string(str))
 
 }
