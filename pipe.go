@@ -8,9 +8,8 @@ type pipe struct {
 	chsize int
 }
 
-func newPipe(bufsize int, chsize int) *pipe {
+func newPipe(b []byte, chsize int) *pipe {
 	ch := make(chan []byte, chsize)
-	b := make([]byte, 0, bufsize)
 	return &pipe{ch, b, chsize}
 }
 
@@ -20,12 +19,7 @@ func (pi *pipe) Write(p []byte) (int, error) {
 }
 
 func (pi *pipe) Close() error {
-	close(pi.ch)
 	return nil
-}
-
-func (pi *pipe) Open() {
-	pi.ch = make(chan []byte, pi.chsize)
 }
 
 func (pi *pipe) Read(p []byte) (int, error) {
