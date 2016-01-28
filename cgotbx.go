@@ -58,6 +58,7 @@ import (
 	"log"
 	"runtime"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/brentp/xopen"
@@ -68,6 +69,9 @@ type Tbx struct {
 	tbx    *C.tbx_t
 	htfs   chan *C.htsFile
 	kCache chan C.kstring_t
+
+	mu         sync.RWMutex
+	chromCache map[string]C.int
 }
 
 func _close(t *Tbx) {
@@ -110,6 +114,7 @@ func New(path string, n ...int) (*Tbx, error) {
 	for i := 0; i < cap(t.kCache); i++ {
 		t.kCache <- C.kstring_t{}
 	}
+	t.chromCache = make(map[string]C.int)
 
 	t.tbx = C.tbx_index_load(cs)
 	runtime.SetFinalizer(t, _close)
@@ -117,7 +122,14 @@ func New(path string, n ...int) (*Tbx, error) {
 	return t, nil
 }
 
-func (t *Tbx) Get(chrom string, start int, end int) (io.Reader, error) {
+func (t *Tbx) getChrom(chrom string) C.int {
+
+	t.mu.RLock()
+	if i, ok := t.chromCache[chrom]; ok {
+		t.mu.RUnlock()
+		return i
+	}
+	t.mu.RUnlock()
 	cchrom := C.CString(chrom)
 	ichrom := C.tbx_name2id(t.tbx, cchrom)
 	C.free(unsafe.Pointer(cchrom))
@@ -130,6 +142,14 @@ func (t *Tbx) Get(chrom string, start int, end int) (io.Reader, error) {
 		ichrom = C.tbx_name2id(t.tbx, cchrom)
 		C.free(unsafe.Pointer(cchrom))
 	}
+	t.mu.Lock()
+	t.chromCache[chrom] = ichrom
+	t.mu.Unlock()
+	return ichrom
+}
+
+func (t *Tbx) Get(chrom string, start int, end int) (io.Reader, error) {
+	ichrom := t.getChrom(chrom)
 	if ichrom == -1.0 {
 		log.Printf("chromosome: %s not found in %s \n", chrom, t.path)
 		return strings.NewReader(""), nil
