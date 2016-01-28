@@ -93,7 +93,7 @@ func _close(t *Tbx) {
 }
 
 func New(path string, n ...int) (*Tbx, error) {
-	if !(xopen.Exists(path) && xopen.Exists(path+".tbi")) {
+	if !(xopen.Exists(path) && (xopen.Exists(path+".tbi") || xopen.Exists(path+".csi"))) {
 		return nil, fmt.Errorf("need gz file and .tbi for %s", path)
 	}
 	size := 20
@@ -116,7 +116,13 @@ func New(path string, n ...int) (*Tbx, error) {
 	}
 	t.chromCache = make(map[string]C.int)
 
-	t.tbx = C.tbx_index_load(cs)
+	if xopen.Exists(path + ".csi") {
+		csi := C.CString(path + ".csi")
+		defer C.free(unsafe.Pointer(csi))
+		t.tbx = C.tbx_index_load2(cs, csi)
+	} else {
+		t.tbx = C.tbx_index_load(cs)
+	}
 	runtime.SetFinalizer(t, _close)
 
 	return t, nil
