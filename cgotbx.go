@@ -158,12 +158,11 @@ func (t *Tbx) Get(chrom string, start int, end int) (io.Reader, error) {
 	itr := C.tabix_itr_queryi(t.tbx, ichrom, C.int(start), C.int(end))
 
 	l := C.int(10)
-	p := newPipe(make([]byte, 0, 32), 2) // TODO keep a cache of pipes?
+	p := newPipe(make([]byte, 0, 32), 3)
 	// + pull from chans of *C.htsFile
 	n, times := 0, 0
 	go func() {
 		var kstr1, kstr2, kstr3, kstr4, kstr5 = <-t.kCache, <-t.kCache, <-t.kCache, <-t.kCache, <-t.kCache
-		//var kstr1, kstr2, kstr3 = C.kstring_t{}, C.kstring_t{}, C.kstring_t{}
 		htf := <-t.htfs
 		for l > 0 {
 			l := C.tbx_itr_next5(htf, t.tbx, itr, &kstr1, &kstr2, &kstr3, &kstr4, &kstr5)
@@ -182,12 +181,12 @@ func (t *Tbx) Get(chrom string, start int, end int) (io.Reader, error) {
 		close(p.ch)
 		// unlock
 		t.htfs <- htf
-		C.hts_itr_destroy(itr)
 		t.kCache <- kstr1
 		t.kCache <- kstr2
 		t.kCache <- kstr3
 		t.kCache <- kstr4
 		t.kCache <- kstr5
+		C.hts_itr_destroy(itr)
 	}()
 	return p, nil
 }
