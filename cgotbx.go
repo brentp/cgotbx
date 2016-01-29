@@ -4,7 +4,7 @@ package cgotbx
 // go build -o q --ldflags '-linkmode external -extldflags "-static"' main/main.go
 
 /*
-#cgo LDFLAGS: -lhts -lpthread -lz -lm
+#cgo LDFLAGS: -lhts -lpthread -lz -lm -L/usr/local/lib
 #include "stdlib.h"
 #include <zlib.h>
 #include "htslib/hts.h"
@@ -16,37 +16,42 @@ package cgotbx
 #include "htslib/faidx.h"
 #include "htslib/kfunc.h"
 
-inline hts_itr_t *tabix_itr_queryi(tbx_t *tbx,  int tid, int beg, int end){
-   return hts_itr_query((tbx)->idx, (tid), (beg), (end), tbx_readrec);
+inline hts_itr_t *tabix_itr_queryi(tbx_t *tbx,  int tid, int beg, int end, int *ret){
+   hts_itr_t *h = hts_itr_query((tbx)->idx, (tid), (beg), (end), tbx_readrec);
+   if(h->n_off == 0) {
+	   hts_itr_destroy(h);
+	   *ret = -1;
+   }
+   return h;
 }
 
-inline int tbx_itr_next5(htsFile *fp, tbx_t *tbx, hts_itr_t *iter, kstring_t *data1, kstring_t *data2, kstring_t *data3, kstring_t *data4, kstring_t *data5) {
+inline int tbx_itr_next5(htsFile *fp, tbx_t *tbx, hts_itr_t *iter, kstring_t *data1, kstring_t *data2) {
 	int t1 = tbx_itr_next(fp, tbx, iter, (void *)data1);
-	if(t1<=0){ return 0; }
+	if(t1<=0){ hts_itr_destroy(iter); return -1; }
 	kputc('\n', data1);
 
 	int t2 = tbx_itr_next(fp, tbx, iter, (void *)data2);
-	if(t2<=0){ return 1; }
+	if(t2<=0){ hts_itr_destroy(iter); return 0; }
 	kputsn(data2->s, data2->l, data1);
 	kputc('\n', data1);
 
-	int t3 = tbx_itr_next(fp, tbx, iter, (void *)data3);
-	if(t3<=0){ return 2; }
-	kputsn(data3->s, data3->l, data1);
+	int t3 = tbx_itr_next(fp, tbx, iter, (void *)data2);
+	if(t3<=0){ hts_itr_destroy(iter); return 0; }
+	kputsn(data2->s, data2->l, data1);
 	kputc('\n', data1);
 
 
-	int t4 = tbx_itr_next(fp, tbx, iter, (void *)data4);
-	if(t4<=0){ return 3; }
-	kputsn(data4->s, data4->l, data1);
+	int t4 = tbx_itr_next(fp, tbx, iter, (void *)data2);
+	if(t4<=0){ hts_itr_destroy(iter); return 0; }
+	kputsn(data2->s, data2->l, data1);
 	kputc('\n', data1);
 
-	int t5 = tbx_itr_next(fp, tbx, iter, (void *)data5);
-	if(t5<=0){ return 4; }
-	kputsn(data5->s, data5->l, data1);
+	int t5 = tbx_itr_next(fp, tbx, iter, (void *)data2);
+	if(t5<=0){ hts_itr_destroy(iter); return 0; }
+	kputsn(data2->s, data2->l, data1);
 	kputc('\n', data1);
 
-	return 5;
+	return 1;
 }
 
 */
@@ -110,7 +115,7 @@ func New(path string, n ...int) (*Tbx, error) {
 		t.htfs <- C.hts_open(cs, &mode)
 	}
 
-	t.kCache = make(chan C.kstring_t, size*5)
+	t.kCache = make(chan C.kstring_t, size*2)
 	for i := 0; i < cap(t.kCache); i++ {
 		t.kCache <- C.kstring_t{}
 	}
@@ -160,39 +165,36 @@ func (t *Tbx) Get(chrom string, start int, end int) (io.Reader, error) {
 		log.Printf("chromosome: %s not found in %s \n", chrom, t.path)
 		return strings.NewReader(""), nil
 	}
+	ret := C.int(1)
 
-	itr := C.tabix_itr_queryi(t.tbx, ichrom, C.int(start), C.int(end))
+	itr := C.tabix_itr_queryi(t.tbx, ichrom, C.int(start), C.int(end), &ret)
+	if ret < 0 {
+		return strings.NewReader(""), nil
+	}
 
-	l := C.int(10)
-	p := newPipe(make([]byte, 0, 32), 3)
-	// + pull from chans of *C.htsFile
-	n, times := 0, 0
+	p := newPipe(1)
 	go func() {
-		var kstr1, kstr2, kstr3, kstr4, kstr5 = <-t.kCache, <-t.kCache, <-t.kCache, <-t.kCache, <-t.kCache
+		l := C.int(10)
+		kstr1, kstr2 := <-t.kCache, <-t.kCache
 		htf := <-t.htfs
 		for l > 0 {
-			l := C.tbx_itr_next5(htf, t.tbx, itr, &kstr1, &kstr2, &kstr3, &kstr4, &kstr5)
-			if l <= 0 {
+			// < 0 means no data
+			// == 0 means we got data, but end after this
+			l = C.tbx_itr_next5(htf, t.tbx, itr, &kstr1, &kstr2)
+			if l < 0 {
 				break
 			}
-			n += int(l)
-			times += 1
 			res := C.GoBytes(unsafe.Pointer(kstr1.s), C.int(kstr1.l))
 			_, err := p.Write(res)
 			if err != nil {
 				log.Fatal(err)
 			}
 		}
-		//log.Println(n, times)
 		close(p.ch)
 		// unlock
 		t.htfs <- htf
 		t.kCache <- kstr1
 		t.kCache <- kstr2
-		t.kCache <- kstr3
-		t.kCache <- kstr4
-		t.kCache <- kstr5
-		C.hts_itr_destroy(itr)
 	}()
 	return p, nil
 }
